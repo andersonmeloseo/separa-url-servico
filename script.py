@@ -2,6 +2,7 @@ import requests
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 import pandas as pd
+from bs4 import BeautifulSoup
 
 def get_urls_from_sitemap(sitemap_url, visited=None):
     if visited is None:
@@ -11,7 +12,7 @@ def get_urls_from_sitemap(sitemap_url, visited=None):
         return urls
     visited.add(sitemap_url)
     try:
-        response = requests.get(sitemap_url)
+        response = requests.get(sitemap_url, timeout=10)
         response.raise_for_status()
     except Exception as e:
         print(f"Erro ao acessar {sitemap_url}: {e}")
@@ -47,10 +48,10 @@ def process_url(url):
         subdomain = ""
         domain = netloc
     base.extend([subdomain, domain])
+    
     path_segments = [seg for seg in parsed.path.split("/") if seg]
     if not path_segments:
-        head = []
-        last = []
+        head, last = [], []
     else:
         if len(path_segments) == 1:
             head = []
@@ -67,9 +68,7 @@ def extract_service_location(url):
     # Padrão 1: se "services" estiver no caminho
     if "services" in path_segments:
         idx = path_segments.index("services")
-        service = ""
-        city = ""
-        state = ""
+        service, city, state = "", "", ""
         if len(path_segments) > idx + 1:
             service = path_segments[idx+1].replace("-", " ").strip().title()
         if len(path_segments) > idx + 2:
@@ -85,7 +84,7 @@ def extract_service_location(url):
         if not path_segments:
             return "", "", ""
         last_segment = path_segments[-1]
-        # Padrão 2: verifica se o último segmento contém "-in-"
+        # Padrão 2: se o último segmento contiver "-in-"
         if "-in-" in last_segment:
             parts = last_segment.split("-in-")
             service = parts[0].replace("-", " ").strip().title()
@@ -119,33 +118,47 @@ def create_segmented_urls_df(processed_data):
             last_block = nonfinal_padded + [""] * 6 + [final]
         else:
             last_block = [""] * (max_nonfinal + 6 + 1)
-        row = base + head_padded + last_block
-        rows.append(row)
+        rows.append(base + head_padded + last_block)
     base_headers = ["Protocolo", "Subdomínio", "Domínio"]
     head_headers = [f"Caminho Segmento {i+1}" for i in range(max_head)]
     nonfinal_headers = [f"Último Segmento Parte {i+1}" for i in range(max_nonfinal)]
-    espacos_headers = [f"Espaço Vazio {i+1}" for i in range(6)]
+    empty_headers = [f"Espaço Vazio {i+1}" for i in range(6)]
     final_header = ["Último Elemento da Última Trilha"]
-    header = base_headers + head_headers + nonfinal_headers + espacos_headers + final_header
+    header = base_headers + head_headers + nonfinal_headers + empty_headers + final_header
     return pd.DataFrame(rows, columns=header)
 
 def create_service_location_df(urls):
     rows = []
     for url in urls:
         service, city, state = extract_service_location(url)
-        row = [url, service, city] + [""] * 6 + [state]
-        rows.append(row)
+        rows.append([url, service, city] + [""] * 6 + [state])
     columns = ["URL Completa", "Serviço", "Cidade", "Vazio 1", "Vazio 2", "Vazio 3", "Vazio 4", "Vazio 5", "Vazio 6", "Estado"]
     return pd.DataFrame(rows, columns=columns)
+
+def get_site_query(url):
+    if "://" in url:
+        url_no_proto = url.split("://", 1)[1]
+    else:
+        url_no_proto = url
+    if url_no_proto.startswith("www."):
+        url_no_proto = url_no_proto[4:]
+    return "site:" + url_no_proto
+
+def create_indexation_df(urls):
+    # Cria um DataFrame com apenas uma coluna "Site Query"
+    queries = [get_site_query(url) for url in urls]
+    return pd.DataFrame(queries, columns=["Site Query"])
 
 def write_excel_all(processed_data, urls, domain, output_filename=None):
     df_segmented = create_segmented_urls_df(processed_data)
     df_service_location = create_service_location_df(urls)
+    df_indexation = create_indexation_df(urls)
     if output_filename is None:
         output_filename = f"{domain}.xlsx"
     with pd.ExcelWriter(output_filename, engine="xlsxwriter") as writer:
         df_segmented.to_excel(writer, index=False, sheet_name="Segmented URLs")
         df_service_location.to_excel(writer, index=False, sheet_name="Serviço e Localização")
+        df_indexation.to_excel(writer, index=False, sheet_name="Indexação")
     print(f"Arquivo Excel gerado: {output_filename}")
 
 def main():
